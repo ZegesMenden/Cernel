@@ -1,5 +1,5 @@
 
-build:
+all:
 	cd build && ninja
 
 flash:

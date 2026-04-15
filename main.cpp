@@ -9,49 +9,86 @@ extern "C" {
 void thread0(void* args) {
 
     const char* TAG = "thread0";
-    
+
     while(1) {
-        LOGI(TAG, "this is a message from thread 0!");
 
-        threadtime_t t_preyield = thread_gettime();
-        thread_yield(thread_ustotime(1000000));
-        threadtime_t t_postyield = thread_gettime();
+        LOGI(TAG, "running thread0!");
+        thread_delay(thread_mstotime(500));
 
-        LOGI(TAG, "I was yielded for %llu uS", thread_timetous(t_postyield - t_preyield));
     }
 
 }
 
+void threadpi(void* args) {
 
-void thread1(void* args) {
+    const char* TAG = "threadpi";
 
-    const char* TAG = "thread1";
-    
+    uint64_t num_inside = 0;
+    uint64_t num_iters = 0;
+    long double pi_est = 0;
+
+    auto prng = [](uint32_t& seed) {
+        seed = seed * 1103515245 + 12345;
+        return (seed / 65536) % 32768;
+    };
+
+    uint32_t seed = thread_timetous(thread_gettime());
+
     while(1) {
-        LOGI(TAG, "this is a message from thread 1!");
-        
-        threadtime_t t_preyield = thread_gettime();
-        thread_yield(thread_ustotime(500000));
-        threadtime_t t_postyield = thread_gettime();
 
-        LOGI(TAG, "I was yielded for %llu uS", thread_timetous(t_postyield - t_preyield));
+        // if a = pi * r^2 and r = 1, then the area of a r=1 circle should be pi
+
+        long double x = ((prng(seed) / float(32768)) * 2.0) - 1.0;
+        long double y = ((prng(seed) / float(32768)) * 2.0) - 1.0;
+
+        num_inside += ( (x * x) + (y * y) < (long double)1.0 );
+        num_iters += 1;
+
+        pi_est = 4.0 * ((long double)num_inside / (long double)num_iters);
+
+        kernel_critical_enter();
+        if ( num_iters % 10000 == 0 ) {
+            LOGI(TAG, "newest pi estimate: %.12f", (float)pi_est);
+        }
+        kernel_critical_exit();
+
     }
 
 }
 
+void threade(void* args) {
 
-void thread2(void* args) {
+    const char* TAG = "threadeuler";
 
-    const char* TAG = "thread2";
-    
+    uint64_t num_inside = 0;
+    uint64_t num_iters = 0;
+    long double e_est = 0;
+
+    auto prng = [](uint32_t& seed) {
+        seed = seed * 1103515245 + 12345;
+        return (seed / 65536) % 32768;
+    };
+
+    uint32_t seed = thread_timetous(thread_gettime());
+
     while(1) {
-        LOGI(TAG, "this is a message from thread 2!");
-        
-        threadtime_t t_preyield = thread_gettime();
-        thread_yield(thread_ustotime(100000));
-        threadtime_t t_postyield = thread_gettime();
 
-        LOGI(TAG, "I was yielded for %llu uS", thread_timetous(t_postyield - t_preyield));
+        // if a = pi * r^2 and r = 1, then the area of a r=1 circle should be pi
+
+        long double x = ((prng(seed) / float(32768)) * 2) + 1;
+        long double y = (prng(seed) / float(32768));
+
+        num_inside += ( y < (1.0/x) && x < e_est );
+        num_iters += 1;
+
+        e_est = ((long double)num_inside / (long double)num_iters);
+
+        kernel_critical_enter();
+        if ( num_iters % 10000 == 0 ) {
+            LOGI(TAG, "newest e estimate: %f", (float)e_est);
+        }
+        kernel_critical_exit();
+
     }
 
 }
@@ -59,7 +96,7 @@ void thread2(void* args) {
 void threadidle(void* args) {
 
     while(1) {
-        thread_yield(0);
+        thread_delay(0);
     }
 
 }
@@ -71,9 +108,9 @@ int main()
     getchar();
 
     thread_create(thread0, NULL, (threadpriority_t)thread_idle_priority + 1, "task0");
-    thread_create(thread1, NULL, (threadpriority_t)thread_idle_priority + 1, "task1");
-    thread_create(thread2, NULL, (threadpriority_t)thread_idle_priority + 1, "task2");
-    thread_create(threadidle, NULL, (threadpriority_t)thread_idle_priority + 1, "idle");
+    thread_create(threadpi, NULL, (threadpriority_t)thread_idle_priority + 1, "taskpi");
+    thread_create(threade, NULL, (threadpriority_t)thread_idle_priority + 1, "taskeuler");
+    thread_create(threadidle, NULL, (threadpriority_t)thread_idle_priority, "idle");
 
     thread_begin();
 

@@ -15,7 +15,7 @@ typedef struct {
 
     uint8_t* sp_cur;
     uint8_t stack_base[THREAD_STACK_SIZE];
-    char* name;
+    const char* name;
 
     thread_entrypoint_t entry;
     void* entry_args;
@@ -40,6 +40,7 @@ typedef struct {
 } corecontext_t;
 
 corecontext_t* getcorecontext();
+bool context_is_initialized();
 
 extern size_t schedule(threadinfo_t* threads, size_t threadcur, size_t threadcount);
 

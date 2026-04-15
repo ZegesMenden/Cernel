@@ -9,34 +9,31 @@ extern "C" {
 
 static const char* TAG = "kernel";
 
-extern void thread_context_switch_coop(uint8_t **sp_cur, uint8_t **sp_next);
-extern void thread_context_set(uint8_t *sp_next);
-extern void* thread_context_init(void* stack_top);
+// --------------------------------------------------
+// Cooperative task switching and state handling
+// --------------------------------------------------
 
-void thread_yield(threadtime_t delay) {
+extern void thread_tick_handler();
+extern void thread_context_load(uint8_t* sp) __attribute((noreturn));
+extern void thread_context_switch() __attribute((noreturn));
+extern void* thread_context_init(uint8_t* stack_top);
+
+
+void thread_delay(threadtime_t delay) {
+
+    kernel_critical_enter();
 
     corecontext_t* corecontext = getcorecontext();
 
     assert(corecontext->threadcount > 0);
 
     threadinfo_t *thread_cur = &corecontext->thread_list[corecontext->threadcur];
-    size_t idx_threadnext = schedule(corecontext->thread_list, corecontext->threadcur, corecontext->threadcount);
-
-    // add checks?
-
-    threadinfo_t *thread_next = &corecontext->thread_list[idx_threadnext];
-
-    // LOGI(TAG, "Preempted from thread %lu to thread %lu", corecontext->threadcur, idx_threadnext);
 
     // Assume thread time will never overflow (make it an implementation requirement to have a sufficiently large time size)
     thread_cur->lastrun = thread_gettime();
     thread_cur->nextrun = (delay == thread_yielddelay) ? thread_cur->lastrun + yield_effective_delay_time_us : thread_cur->lastrun + delay;
 
-    if ( corecontext->threadcur == idx_threadnext ) { return; }
-    
-    corecontext->threadcur = idx_threadnext;
-
-    thread_context_switch_coop(&thread_cur->sp_cur, &thread_next->sp_cur);
+    thread_context_switch();
 
 }
 
@@ -64,7 +61,7 @@ void thread_bootstrap() {
     LOGI(TAG, "Preempted from thread %lu to thread %lu", corecontext->threadcur, idx_threadnext);
 
     corecontext->threadcur = idx_threadnext;
-    thread_context_set(thread_next->sp_cur);
+    thread_context_load(thread_next->sp_cur);
 
 }
 
@@ -96,12 +93,13 @@ void thread_create(thread_entrypoint_t entry, void* args, threadpriority_t prior
 void thread_begin() {
 
     corecontext_t* context = getcorecontext();
+    kernel_init_internal();
 
     // run the first available thread
     for ( size_t i = 0; i < context->threadcount; i++ ) {
         if ( context->thread_list[i].active == true ) {
             context->threadcur = i;
-            thread_context_set(context->thread_list[i].sp_cur);
+            thread_context_load(context->thread_list[i].sp_cur);
             return;
         }
     }
