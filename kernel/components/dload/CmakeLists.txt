@@ -1,0 +1,26 @@
+add_subdirectory(elfload EXCLUDE_FROM_ALL)
+
+add_library(dload STATIC
+	loader.c
+	loader.h
+)
+
+target_include_directories(dload
+	PUBLIC
+		${CMAKE_CURRENT_LIST_DIR}
+		${CMAKE_CURRENT_LIST_DIR}/elfload
+		${CMAKE_CURRENT_LIST_DIR}/../../include
+)
+
+target_compile_definitions(dload
+	PUBLIC
+		LOG_ENABLE
+		LOG_USE_COLORS
+		LOG_USE_TIMESTAMP
+		LOG_LEVEL=4
+)
+
+target_link_libraries(dload
+	PUBLIC
+		elfload
+)

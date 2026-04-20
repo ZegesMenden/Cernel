@@ -1,9 +1,13 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 
+
+
 extern "C" {
     #include "kernel.h"
     #include "klogging.h"
+
+    #include "dload/loader.h"
 }
 
 void thread0(void* args) {
@@ -19,77 +23,63 @@ void thread0(void* args) {
 
 }
 
-void threadpi(void* args) {
+void threadprogloader(void* args) {
 
-    const char* TAG = "threadpi";
+    const char* TAG = "loader";
 
-    uint64_t num_inside = 0;
-    uint64_t num_iters = 0;
-    long double pi_est = 0;
+    const uint8_t* ELFFILE;
 
-    auto prng = [](uint32_t& seed) {
-        seed = seed * 1103515245 + 12345;
-        return (seed / 65536) % 32768;
-    };
+    uint8_t progmem_dynamic[1024*4];
 
-    uint32_t seed = thread_timetous(thread_gettime());
-
-    while(1) {
-
-        // if a = pi * r^2 and r = 1, then the area of a r=1 circle should be pi
-
-        long double x = ((prng(seed) / float(32768)) * 2.0) - 1.0;
-        long double y = ((prng(seed) / float(32768)) * 2.0) - 1.0;
-
-        num_inside += ( (x * x) + (y * y) < (long double)1.0 );
-        num_iters += 1;
-
-        pi_est = 4.0 * ((long double)num_inside / (long double)num_iters);
-
-        kernel_critical_enter();
-        if ( num_iters % 10000 == 0 ) {
-            LOGI(TAG, "newest pi estimate: %.12f", (float)pi_est);
+    loader_result_t res = loader_load_elf(ELFFILE, 1024, progmem_dynamic, 1024 * 4);
+    
+    switch(res.status) {
+        case(EL_OK): {
+            LOGI(TAG, "EL_OK");
+            break;
         }
-        kernel_critical_exit();
-
+        case(EL_EIO): {
+            LOGE(TAG, "EL_EIO");
+            break;
+        }
+        case(EL_ENOMEM): {
+            LOGE(TAG, "EL_ENOMEM");
+            break;
+        }
+        case(EL_NOTELF): {
+            LOGE(TAG, "EL_NOTELF");
+            break;
+        }
+        case(EL_WRONGBITS): {
+            LOGE(TAG, "EL_WRONGBITS");
+            break;
+        }
+        case(EL_WRONGENDIAN): {
+            LOGE(TAG, "EL_WRONGENDIAN");
+            break;
+        }
+        case(EL_WRONGARCH): {
+            LOGE(TAG, "EL_WRONGARCH");
+            break;
+        }
+        case(EL_WRONGOS): {
+            LOGE(TAG, "EL_WRONGOS");
+            break;
+        }
+        case(EL_NOTEXEC): {
+            LOGE(TAG, "EL_NOTEXEC");
+            break;
+        }
+        case(EL_NODYN): {
+            LOGE(TAG, "EL_NODYN");
+            break;
+        }
+        case(EL_BADREL): {
+            LOGE(TAG, "EL_BADREL");
+            break;
+        }
     }
 
-}
-
-void threade(void* args) {
-
-    const char* TAG = "threadeuler";
-
-    uint64_t num_inside = 0;
-    uint64_t num_iters = 0;
-    long double e_est = 0;
-
-    auto prng = [](uint32_t& seed) {
-        seed = seed * 1103515245 + 12345;
-        return (seed / 65536) % 32768;
-    };
-
-    uint32_t seed = thread_timetous(thread_gettime());
-
-    while(1) {
-
-        // if a = pi * r^2 and r = 1, then the area of a r=1 circle should be pi
-
-        long double x = ((prng(seed) / float(32768)) * 2) + 1;
-        long double y = (prng(seed) / float(32768));
-
-        num_inside += ( y < (1.0/x) && x < e_est );
-        num_iters += 1;
-
-        e_est = ((long double)num_inside / (long double)num_iters);
-
-        kernel_critical_enter();
-        if ( num_iters % 10000 == 0 ) {
-            LOGI(TAG, "newest e estimate: %f", (float)e_est);
-        }
-        kernel_critical_exit();
-
-    }
 
 }
 
@@ -108,8 +98,6 @@ int main()
     getchar();
 
     thread_create(thread0, NULL, (threadpriority_t)thread_idle_priority + 1, "task0");
-    thread_create(threadpi, NULL, (threadpriority_t)thread_idle_priority + 1, "taskpi");
-    thread_create(threade, NULL, (threadpriority_t)thread_idle_priority + 1, "taskeuler");
     thread_create(threadidle, NULL, (threadpriority_t)thread_idle_priority, "idle");
 
     thread_begin();

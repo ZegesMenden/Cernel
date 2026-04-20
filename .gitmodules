@@ -1,0 +1,3 @@
+[submodule "kernel/components/dload/elfload"]
+	path = kernel/components/dload/elfload
+	url = https://github.com/Spritetm/elfload
