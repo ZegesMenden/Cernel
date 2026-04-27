@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-#include "kernel.h"
+#include "kthreads.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>

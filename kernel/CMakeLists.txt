@@ -1,11 +1,15 @@
-file(GLOB KERNEL_SRC ${CMAKE_CURRENT_LIST_DIR}/src/*.c)
+file(GLOB KERNEL_SRC ${CMAKE_CURRENT_LIST_DIR}/src/*.c ${CMAKE_CURRENT_LIST_DIR}/src/*.s)
 
 # This should change in the future so we can define different implementations
 file(GLOB KERNEL_IMPL ${CMAKE_CURRENT_LIST_DIR}/impl/*.c ${CMAKE_CURRENT_LIST_DIR}/impl/*.s)
 
 add_subdirectory(components/dload)
 
-add_library(pico_kernel STATIC ${KERNEL_SRC} ${KERNEL_IMPL})
+add_library(pico_kernel STATIC
+    ${KERNEL_SRC}
+    ${KERNEL_IMPL}
+    ${CMAKE_CURRENT_LIST_DIR}/components/malloc/malloc.c
+)
 
 # Expose only kernel.h to consumers.
 target_include_directories(pico_kernel
@@ -24,6 +28,18 @@ target_link_libraries(pico_kernel
         hardware_riscv_platform_timer
         hardware_hazard3
     dload
+)
+
+# Route libc allocations to the kernel allocator.
+target_link_options(pico_kernel PUBLIC
+    -Wl,--wrap=malloc
+    -Wl,--wrap=free
+    -Wl,--wrap=calloc
+    -Wl,--wrap=realloc
+    -Wl,--wrap=_malloc_r
+    -Wl,--wrap=_free_r
+    -Wl,--wrap=_calloc_r
+    -Wl,--wrap=_realloc_r
 )
 
 if(NOT DEFINED LOG_LEVEL)

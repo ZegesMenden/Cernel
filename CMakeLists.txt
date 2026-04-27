@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Initialise pico_sdk from installed location
@@ -30,8 +30,17 @@ include(pico_sdk_import.cmake)
 
 project(pico-kernel C CXX ASM)
 
+add_library(pico_malloc INTERFACE)
+
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
+
+# Some SDK/toolchain combinations may not define pico_malloc_headers as a CMake target.
+# If it is referenced by other Pico SDK targets, CMake will otherwise treat it as a
+# plain library name and emit '-lpico_malloc_headers' (which then fails to link).
+if (NOT TARGET pico_malloc_headers)
+    add_library(pico_malloc_headers INTERFACE)
+endif()
 
 # Kernel module
 add_subdirectory(kernel)
@@ -60,4 +69,6 @@ pico_enable_stdio_uart(pico-kernel 0)
 pico_enable_stdio_usb(pico-kernel 1)
 
 pico_add_extra_outputs(pico-kernel)
+
+
 

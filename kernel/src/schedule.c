@@ -3,9 +3,9 @@
 #include "stddef.h"
 #include "klogging.h"
 
-size_t schedule(threadinfo_t* threads, size_t threadcur, size_t threadcount) {
+static const char* TAG = "scheduler";
 
-    const char* TAG = "scheduler";
+size_t schedule(threadinfo_t* threads, size_t threadcur, size_t threadcount) {
 
     // PSTTRF - Priotitized Shortest Time To Run First scheduler
     // This scheduler behaves like a STTRF

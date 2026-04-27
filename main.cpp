@@ -1,10 +1,9 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
-
-
+#include "malloc/malloc.h"
 
 extern "C" {
-    #include "kernel.h"
+    #include "kthreads.h"
     #include "klogging.h"
 
     #include "dload/loader.h"

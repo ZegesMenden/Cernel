@@ -1,5 +1,5 @@
-#ifndef PICO_KERNEL_H
-#define PICO_KERNEL_H
+#ifndef KERNEL_THREADS_H
+#define KERNEL_THREADS_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -20,6 +20,9 @@
 typedef uint8_t threadpriority_t;
 #define thread_idle_priority (threadpriority_t)0
 
+// thread identifier
+typedef uint64_t tid_t;
+
 typedef uint64_t threadtime_t;
 typedef int64_t threadtimediff_t;
 #define thread_nodelay (threadtime_t)0
@@ -27,7 +30,9 @@ typedef int64_t threadtimediff_t;
 #define thread_maxtime (threadtime_t)UINT64_MAX
 
 typedef void(*thread_entrypoint_t)(void*);
+
 void thread_create(thread_entrypoint_t entry, void* args, threadpriority_t priority, const char* name);
+tid_t thread_getid();
 
 void thread_begin();
 void thread_delay(threadtime_t delay);
@@ -43,6 +48,5 @@ threadtime_t thread_stotime(uint64_t t_s);
 
 void kernel_critical_enter();
 void kernel_critical_exit();
-
 
 #endif // PICO_KERNEL_H

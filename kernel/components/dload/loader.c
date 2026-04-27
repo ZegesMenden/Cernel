@@ -3,8 +3,6 @@
 #include <string.h>
 #include "klogging.h"
 
-static const char *TAG = "dload";
-
 typedef struct loader_ctx {
 	el_ctx elf;
 	const uint8_t *image;
@@ -12,6 +10,8 @@ typedef struct loader_ctx {
 	uintptr_t load_base;
 	size_t load_size;
 } loader_ctx_t;
+
+static const char *TAG = "dload";
 
 static bool loader_pread(el_ctx *ctx, void *dest, size_t nb, size_t offset)
 {
