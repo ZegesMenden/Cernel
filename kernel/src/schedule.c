@@ -39,6 +39,8 @@ size_t schedule(threadinfo_t* threads, size_t threadcur, size_t threadcount) {
         nextthread_index = threadcur;
     }
 
+    // LOGI(TAG, "Identified thread %s (tid=%lu) for next run", threads[nextthread_index].name, threads[nextthread_index].tid);
+
     return nextthread_index;
 
 }

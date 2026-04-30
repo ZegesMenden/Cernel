@@ -17,7 +17,21 @@ extern "C" {
 
 static const char* TAG = "kernel";
 
-tid_t treadid_counter = 1;
+#ifndef KTHREAD_TRACE_ENABLE
+#define KTHREAD_TRACE_ENABLE 1
+#endif
+
+#ifndef KTHREAD_TRACE_TICK_ENABLE
+#define KTHREAD_TRACE_TICK_ENABLE 0
+#endif
+
+#if KTHREAD_TRACE_ENABLE
+#define KTRACE(...) LOGI(TAG, __VA_ARGS__)
+#else
+#define KTRACE(...) ((void)0)
+#endif
+
+tid_t threadid_counter = TID_FIRST_VALID;
 
 volatile bool libinitialized_core0 = false;
 volatile bool libinitialized_core1 = false;
@@ -25,17 +39,28 @@ volatile bool libinitialized_core1 = false;
 corecontext_t __ctx_core0 = { {}, 0, 0 };
 corecontext_t __ctx_core1 = { {}, 0, 0 };
 
-uint32_t __irqstate_core0;
-uint32_t __irqstate_core1;
-
 // --------------------------------------------------
 // Preemptive task switching and state handling
 // --------------------------------------------------
 
 extern void thread_tick_handler();
 extern void thread_context_load(uint8_t* sp) __attribute((noreturn));
-extern void thread_context_switch() __attribute((noreturn));
+extern void thread_context_switch();
 extern void* thread_context_init(uint8_t* stack_top);
+
+static uint32_t __boot_critical_irqstate_core0 = 0;
+static uint32_t __boot_critical_irqstate_core1 = 0;
+static uint __boot_critical_depth_core0 = 0;
+static uint __boot_critical_depth_core1 = 0;
+
+static threadinfo_t* get_current_threadinfo() {
+    corecontext_t* corecontext = getcorecontext();
+    if (corecontext->threadcount == 0 || corecontext->threadcur >= corecontext->threadcount) {
+        return NULL;
+    }
+
+    return &corecontext->thread_list[corecontext->threadcur];
+}
 
 corecontext_t* getcorecontext() {
     return get_core_num() == 0 ? &__ctx_core0 : &__ctx_core1;
@@ -77,60 +102,128 @@ void kernel_threading_init_internal() {
     if ( get_core_num() == 0 ) { libinitialized_core0 = true; }
     else { libinitialized_core1 = true; }
 
+    KTRACE("threading init core=%u", (unsigned)get_core_num());
+
     // attach tick interrupt
 
-    riscv_timer_set_mtimecmp(riscv_timer_get_mtime() + KERNEL_TICK_TIME_US);
-    riscv_timer_set_enabled(true);
+    // riscv_timer_set_mtimecmp(riscv_timer_get_mtime() + KERNEL_TICK_TIME_US);
+    // riscv_timer_set_enabled(true);
 
-    irq_set_riscv_vector_handler(RISCV_VEC_MACHINE_TIMER_IRQ, thread_tick_handler);
-    riscv_set_csr(mie, 1u << 7); // enable interrupts
+    // irq_set_riscv_vector_handler(RISCV_VEC_MACHINE_TIMER_IRQ, thread_tick_handler);
+    // riscv_set_csr(mie, 1u << 7); // enable interrupts
 
 }
 
 void kernel_tick_handle() {
     riscv_timer_set_mtimecmp(riscv_timer_get_mtimecmp() + KERNEL_TICK_TIME_US);
+#if KTHREAD_TRACE_ENABLE && KTHREAD_TRACE_TICK_ENABLE
+    KTRACE("tick core=%u", (unsigned)get_core_num());
+#endif
 }
 
 void kernel_critical_enter() {
 
-    // TODO:
-    // There needs to be some sort of check to see if interrupts have already been disabled on this core
-    // also some sort of safe reporting/logging mechanism
+    uint core_num = get_core_num();
+    threadinfo_t* thread_cur = get_current_threadinfo();
+    if (thread_cur == NULL) {
+        uint* boot_depth = core_num == 0 ? &__boot_critical_depth_core0 : &__boot_critical_depth_core1;
+        uint32_t* boot_irqstate = core_num == 0 ? &__boot_critical_irqstate_core0 : &__boot_critical_irqstate_core1;
 
-    uint32_t irqstate = save_and_disable_interrupts();
-    if ( get_core_num() == 0 ) { __irqstate_core0 = irqstate; }
-    else { __irqstate_core1 = irqstate; }
+        if (*boot_depth == 0) {
+            *boot_irqstate = save_and_disable_interrupts();
+        }
+
+        (*boot_depth)++;
+        return;
+    }
+
+    if (thread_cur->critical_depth == 0) {
+        thread_cur->critical_irqstate = save_and_disable_interrupts();
+    }
+
+    thread_cur->critical_depth++;
 
 }
 
 void kernel_critical_exit() {
 
-    // TODO:
-    // This needs to check if the stored interrupt state is valid
+    uint core_num = get_core_num();
+    threadinfo_t* thread_cur = get_current_threadinfo();
+    if (thread_cur == NULL) {
+        uint* boot_depth = core_num == 0 ? &__boot_critical_depth_core0 : &__boot_critical_depth_core1;
+        uint32_t* boot_irqstate = core_num == 0 ? &__boot_critical_irqstate_core0 : &__boot_critical_irqstate_core1;
 
-    uint32_t irqstate = get_core_num() == 0 ? __irqstate_core0 : __irqstate_core1;
-    restore_interrupts_from_disabled(irqstate);
+        if (*boot_depth == 0) {
+            LOGE(TAG, "(boot context) kernel_critical_exit without matching enter");
+            return;
+        }
+
+        (*boot_depth)--;
+        if (*boot_depth == 0) {
+            restore_interrupts_from_disabled(*boot_irqstate);
+        }
+        return;
+    }
+
+    if (thread_cur->critical_depth == 0) {
+        LOGE(TAG, "(tid=%llu) kernel_critical_exit without matching enter", (unsigned long long)thread_cur->tid);
+        return;
+    }
+
+    thread_cur->critical_depth--;
+    if (thread_cur->critical_depth == 0) {
+        restore_interrupts_from_disabled(thread_cur->critical_irqstate);
+    }
 
 }
 
 uint8_t* thread_preempt_schedule(uint8_t* sp_cur) {
 
-    kernel_critical_enter();
-
     // LOGI(TAG, "running preemptive scheduler");
 
     corecontext_t* corecontext = getcorecontext();
+    size_t current_task = corecontext->threadcur;
+    threadinfo_t* current_thread = &corecontext->thread_list[current_task];
 
-    corecontext->thread_list[corecontext->threadcur].lastrun = thread_gettime();
-    corecontext->thread_list[corecontext->threadcur].nextrun = thread_gettime();
+    // Safe-switch rule: do not preempt while the current thread is in a critical section.
+    if (current_thread->critical_depth > 0) {
+        return sp_cur;
+    }
 
-    size_t next_task = schedule(corecontext->thread_list, corecontext->threadcur, corecontext->threadcount);
+    KTRACE("preempt_enter core=%u cur_idx=%lu cur_tid=%llu sp_in=%p next_run=%llu depth=%lu",
+        (unsigned)get_core_num(),
+        (unsigned long)current_task,
+        (unsigned long long)current_thread->tid,
+        sp_cur,
+        (unsigned long long)current_thread->nextrun,
+        (unsigned long)current_thread->critical_depth);
 
-    corecontext->thread_list[corecontext->threadcur].sp_cur = sp_cur;
+    corecontext->thread_list[current_task].lastrun = thread_gettime();
+    corecontext->thread_list[current_task].nextrun = thread_gettime();
+
+    size_t next_task = schedule(corecontext->thread_list, current_task, corecontext->threadcount);
+    threadinfo_t* next_thread = &corecontext->thread_list[next_task];
+
+    KTRACE("preempt_sched core=%u cur_idx=%lu -> next_idx=%lu next_tid=%llu next_active=%u next_run=%llu sp_next=%p",
+        (unsigned)get_core_num(),
+        (unsigned long)current_task,
+        (unsigned long)next_task,
+        (unsigned long long)next_thread->tid,
+        (unsigned)next_thread->active,
+        (unsigned long long)next_thread->nextrun,
+        next_thread->sp_cur);
+
+    corecontext->thread_list[current_task].sp_cur = sp_cur;
 
     corecontext->threadcur = next_task;
 
-    kernel_critical_exit();
+    KTRACE("preempt_pick core=%u cur_idx=%lu cur_tid=%llu -> next_idx=%lu next_tid=%llu sp_out=%p",
+        (unsigned)get_core_num(),
+        (unsigned long)current_task,
+        (unsigned long long)current_thread->tid,
+        (unsigned long)next_task,
+        (unsigned long long)next_thread->tid,
+        next_thread->sp_cur);
 
     return corecontext->thread_list[next_task].sp_cur;
 
@@ -140,7 +233,7 @@ uint8_t* thread_preempt_schedule(uint8_t* sp_cur) {
 void thread_bootstrap() {
 
     corecontext_t* corecontext = getcorecontext();
-    LOGI(TAG, "executing thread <%s> id=%lu", corecontext->thread_list[corecontext->threadcur].name, corecontext->threadcur);
+    LOGI(TAG, "executing thread <%s> idx=%lu id=%llu", corecontext->thread_list[corecontext->threadcur].name, corecontext->threadcur, corecontext->thread_list[corecontext->threadcur].tid);
 
     threadinfo_t* thread_cur = &corecontext->thread_list[corecontext->threadcur];
 
@@ -171,19 +264,53 @@ void thread_bootstrap() {
 
 void thread_delay(threadtime_t delay) {
 
-    kernel_critical_enter();
+    // kernel_critical_enter();
 
     corecontext_t* corecontext = getcorecontext();
 
     assert(corecontext->threadcount > 0);
 
     threadinfo_t *thread_cur = &corecontext->thread_list[corecontext->threadcur];
+    threadtime_t now = thread_gettime();
+
+    KTRACE("delay_enter core=%u idx=%lu tid=%llu now=%llu delay=%llu depth=%lu",
+        (unsigned)get_core_num(),
+        (unsigned long)corecontext->threadcur,
+        (unsigned long long)thread_cur->tid,
+        (unsigned long long)now,
+        (unsigned long long)delay,
+        (unsigned long)thread_cur->critical_depth);
 
     // Assume thread time will never overflow (make it an implementation requirement to have a sufficiently large time size)
-    thread_cur->lastrun = thread_gettime();
+    thread_cur->lastrun = now;
     thread_cur->nextrun = (delay == thread_yielddelay) ? thread_cur->lastrun + yield_effective_delay_time_us : thread_cur->lastrun + delay;
 
-    thread_context_switch();
+        KTRACE("delay_switch core=%u idx=%lu tid=%llu lastrun=%llu nextrun=%llu",
+            (unsigned)get_core_num(),
+            (unsigned long)corecontext->threadcur,
+            (unsigned long long)thread_cur->tid,
+            (unsigned long long)thread_cur->lastrun,
+            (unsigned long long)thread_cur->nextrun);
+
+    // Safe-switch rule: cooperative switch is only allowed outside critical sections.
+    if (thread_cur->critical_depth == 0) {
+        thread_context_switch();
+    } else {
+        KTRACE("delay_skip_switch core=%u idx=%lu tid=%llu depth=%lu",
+               (unsigned)get_core_num(),
+               (unsigned long)corecontext->threadcur,
+               (unsigned long long)thread_cur->tid,
+               (unsigned long)thread_cur->critical_depth);
+    }
+
+    KTRACE("delay_resume core=%u idx=%lu tid=%llu now=%llu depth=%lu",
+        (unsigned)get_core_num(),
+        (unsigned long)corecontext->threadcur,
+        (unsigned long long)get_calling_tid(),
+        (unsigned long long)thread_gettime(),
+        (unsigned long)thread_cur->critical_depth);
+
+    // kernel_critical_exit();
 
 }
 
@@ -191,12 +318,16 @@ void thread_create(thread_entrypoint_t entry, void* args, threadpriority_t prior
 
     corecontext_t* corecontext = getcorecontext();
 
+    kernel_critical_enter();
+
     if ( corecontext->threadcount == MAX_THREADS ) {
         LOGE(TAG, "Failed to instantiate new thread, thread list is full!");
+        kernel_critical_exit();
         return;
     }
 
-    threadinfo_t* thread_new = &corecontext->thread_list[corecontext->threadcount++];
+    size_t slot = corecontext->threadcount;
+    threadinfo_t* thread_new = &corecontext->thread_list[slot];
 
     thread_new->nextrun = 0;
     thread_new->lastrun = 0;
@@ -207,9 +338,25 @@ void thread_create(thread_entrypoint_t entry, void* args, threadpriority_t prior
     thread_new->entry = entry;
     thread_new->entry_args = args;
     thread_new->name = name;
-    thread_new->tid = treadid_counter++;
+    thread_new->tid = threadid_counter++;
+    thread_new->critical_irqstate = 0;
+    thread_new->critical_depth = 0;
 
     thread_new->sp_cur = thread_context_init(thread_new->sp_cur);
+
+        KTRACE("thread_create core=%u slot=%lu tid=%llu prio=%u name=%s sp=%p count=%lu",
+            (unsigned)get_core_num(),
+            (unsigned long)slot,
+            (unsigned long long)thread_new->tid,
+            (unsigned)priority,
+            name == NULL ? "(null)" : name,
+            thread_new->sp_cur,
+            (unsigned long)corecontext->threadcount);
+
+    kernel_critical_exit();
+
+    corecontext->threadcount++;
+
 
 }
 
@@ -218,10 +365,19 @@ void thread_begin() {
     corecontext_t* context = getcorecontext();
     kernel_threading_init_internal();
 
+    LOGI(TAG, "thread library initialized");
+    KTRACE("thread_begin core=%u count=%lu", (unsigned)get_core_num(), (unsigned long)context->threadcount);
+
     // run the first available thread
     for ( size_t i = 0; i < context->threadcount; i++ ) {
         if ( context->thread_list[i].active == true ) {
             context->threadcur = i;
+            KTRACE("thread_begin_pick core=%u idx=%lu tid=%llu name=%s sp=%p",
+                   (unsigned)get_core_num(),
+                   (unsigned long)i,
+                   (unsigned long long)context->thread_list[i].tid,
+                   context->thread_list[i].name,
+                   context->thread_list[i].sp_cur);
             thread_context_load(context->thread_list[i].sp_cur);
             return;
         }

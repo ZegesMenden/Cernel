@@ -31,6 +31,14 @@ blockinfo_t* block_metadata = NULL;
 size_t block_metadata_len = 0;
 size_t block_max_count = 0;
 
+static bool kmemory_is_free_owner(tid_t owner) {
+    return owner == TID_UNUSED_MEMORY;
+}
+
+static bool kmemory_is_reserved_kernel_owner(tid_t owner) {
+    return owner > TID_UNUSED_MEMORY && owner < TID_FIRST_VALID;
+}
+
 static size_t kmemory_metadata_block_count() {
     size_t metadata_bytes = block_metadata_len * sizeof(blockinfo_t);
     return (metadata_bytes + (KMEMORY_BLOCK_SIZE - 1)) / KMEMORY_BLOCK_SIZE;
@@ -55,7 +63,7 @@ void kernel_memory_init_internal() {
     LOGI(TAG, "block metadata length: %lu", block_metadata_len);
 
     for ( size_t i = 0; i < block_metadata_len; i++ ) {
-        block_metadata[i] = (blockinfo_t){0, 0};
+        block_metadata[i] = (blockinfo_t){TID_UNUSED_MEMORY, 0};
     }
 
     // Reserve the heap blocks that contain the metadata itself.
@@ -68,11 +76,10 @@ void kernel_memory_init_internal() {
 
 }
 
-int mem_block_consume(uint16_t count, void** data) {
+static int kmemory_consume_with_owner(uint16_t count, tid_t owner, void** data) {
 
     if ( count == 0 || data == NULL ) { return -1; }
-
-    tid_t consuming_tid = get_calling_tid();
+    if ( owner == TID_UNUSED_MEMORY ) { return -1; }
 
     kernel_critical_enter();
 
@@ -97,7 +104,7 @@ int mem_block_consume(uint16_t count, void** data) {
     size_t i = usable_start;
     while (i < usable_end) {
         // Skip used blocks.
-        while (i < usable_end && block_metadata[i].owner != 0) {
+        while (i < usable_end && !kmemory_is_free_owner(block_metadata[i].owner)) {
             i++;
         }
         if (i >= usable_end) {
@@ -106,7 +113,7 @@ int mem_block_consume(uint16_t count, void** data) {
 
         // Measure free run.
         size_t run_start = i;
-        while (i < usable_end && block_metadata[i].owner == 0) {
+        while (i < usable_end && kmemory_is_free_owner(block_metadata[i].owner)) {
             i++;
         }
         size_t run_len = i - run_start;
@@ -129,7 +136,7 @@ int mem_block_consume(uint16_t count, void** data) {
 
     // Commit allocation.
     for (size_t j = 0; j < (size_t)count; j++) {
-        block_metadata[best_start + j].owner = consuming_tid;
+        block_metadata[best_start + j].owner = owner;
         block_metadata[best_start + j].size = 0;
     }
     block_metadata[best_start].size = count;
@@ -140,7 +147,20 @@ int mem_block_consume(uint16_t count, void** data) {
     return (int)count;
 }
 
-int mem_block_return(void* mem) {
+int mem_block_consume(uint16_t count, void** data) {
+    tid_t consuming_tid = get_calling_tid();
+    return kmemory_consume_with_owner(count, consuming_tid, data);
+}
+
+int mem_block_consume_kernel(uint16_t count, tid_t memory_type, void** data) {
+    if (!kmemory_is_reserved_kernel_owner(memory_type)) {
+        return -1;
+    }
+
+    return kmemory_consume_with_owner(count, memory_type, data);
+}
+
+static int kmemory_return_with_policy(void* mem, bool allow_kernel_owner) {
 
     if (mem == NULL) { return -1; }
 
@@ -167,14 +187,18 @@ int mem_block_return(void* mem) {
     // Find allocation head.
     size_t head = index;
     while (head > metadata_block_count &&
-           block_metadata[head].owner != 0 &&
+           !kmemory_is_free_owner(block_metadata[head].owner) &&
            block_metadata[head].size == 0) {
         head--;
     }
 
     uint16_t alloc_size = block_metadata[head].size;
     tid_t owner = block_metadata[head].owner;
-    if (owner == 0 || alloc_size == 0) {
+    bool owner_is_thread = owner >= TID_FIRST_VALID;
+    bool owner_is_kernel = kmemory_is_reserved_kernel_owner(owner);
+    if (alloc_size == 0 ||
+        (!allow_kernel_owner && !owner_is_thread) ||
+        (allow_kernel_owner && !owner_is_kernel)) {
         kernel_critical_exit();
         return -1;
     }
@@ -184,7 +208,7 @@ int mem_block_return(void* mem) {
         if (block_metadata[head + j].owner != owner) {
             break;
         }
-        block_metadata[head + j].owner = 0;
+        block_metadata[head + j].owner = TID_UNUSED_MEMORY;
         block_metadata[head + j].size = 0;
         freed++;
     }
@@ -193,9 +217,17 @@ int mem_block_return(void* mem) {
     return freed == 0 ? -1 : (int)freed;
 }
 
+int mem_block_return_kernel(void* mem) {
+    return kmemory_return_with_policy(mem, true);
+}
+
+int mem_block_return(void* mem) {
+    return kmemory_return_with_policy(mem, false);
+}
+
 void kernel_memory_thread_exit(tid_t tid) {
 
-    if (tid == 0) { return; }
+    if (tid < TID_FIRST_VALID) { return; }
 
     kernel_critical_enter();
 
@@ -212,11 +244,11 @@ void kernel_memory_thread_exit(tid_t tid) {
                 if (block_metadata[i + j].owner != tid) {
                     break;
                 }
-                block_metadata[i + j].owner = 0;
+                block_metadata[i + j].owner = TID_UNUSED_MEMORY;
                 block_metadata[i + j].size = 0;
             }
         } else {
-            block_metadata[i].owner = 0;
+            block_metadata[i].owner = TID_UNUSED_MEMORY;
             block_metadata[i].size = 0;
         }
     }

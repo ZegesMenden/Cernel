@@ -6,7 +6,7 @@
 
 #include "stdint.h"
 
-#define KMEMORY_BLOCK_SIZE 4096
+#define KMEMORY_BLOCK_SIZE 2048
 
 /// @brief Consume count blocks from system memory. Memory is not guaranteed to be stored in SRAM.
 /// @param count Number of blocks to consume for this resource, bytes consumed is equal to: count*KMEMORY_BLOCK_SIZE

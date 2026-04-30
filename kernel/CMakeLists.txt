@@ -27,7 +27,12 @@ target_link_libraries(pico_kernel
         hardware_timer
         hardware_riscv_platform_timer
         hardware_hazard3
+        hardware_flash
     dload
+)
+
+target_compile_definitions(pico_kernel PUBLIC
+    PICO_PANIC_FUNCTION=kernel_panic_report
 )
 
 # Route libc allocations to the kernel allocator.

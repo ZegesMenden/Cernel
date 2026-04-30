@@ -1,0 +1,33 @@
+1024-function syscall table
+
+
+functions 0-512:
+    platform-dependant functions
+
+functions 512-1024:
+    kernel interface
+
+
+
+thread functions:
+
+thread_create
+thread_delay
+
+kernel_critical_enter
+kernel_critical_exit
+
+thread_gettime
+
+stdio functions:
+
+kernel_printf
+kernel_putc
+kernel_puts
+
+kernel_scanf
+kernel_getc
+
+kernel_log_printf
+
+
