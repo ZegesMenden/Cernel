@@ -17,13 +17,13 @@ extern "C" {
 
 static const char* TAG = "kernel";
 
-#ifndef KTHREAD_TRACE_ENABLE
-#define KTHREAD_TRACE_ENABLE 1
-#endif
+// #ifndef KTHREAD_TRACE_ENABLE
+// #define KTHREAD_TRACE_ENABLE 1
+// #endif
 
-#ifndef KTHREAD_TRACE_TICK_ENABLE
-#define KTHREAD_TRACE_TICK_ENABLE 0
-#endif
+// #ifndef KTHREAD_TRACE_TICK_ENABLE
+// #define KTHREAD_TRACE_TICK_ENABLE 0
+// #endif
 
 #if KTHREAD_TRACE_ENABLE
 #define KTRACE(...) LOGI(TAG, __VA_ARGS__)
@@ -116,6 +116,10 @@ void kernel_threading_init_internal() {
 
 void kernel_tick_handle() {
     riscv_timer_set_mtimecmp(riscv_timer_get_mtimecmp() + KERNEL_TICK_TIME_US);
+    
+    corecontext_t* corecontext = getcorecontext();
+    corecontext->thread_list[corecontext->threadcur].lastrun = thread_gettime();
+    corecontext->thread_list[corecontext->threadcur].nextrun = thread_gettime();
 #if KTHREAD_TRACE_ENABLE && KTHREAD_TRACE_TICK_ENABLE
     KTRACE("tick core=%u", (unsigned)get_core_num());
 #endif
@@ -197,9 +201,6 @@ uint8_t* thread_preempt_schedule(uint8_t* sp_cur) {
         sp_cur,
         (unsigned long long)current_thread->nextrun,
         (unsigned long)current_thread->critical_depth);
-
-    corecontext->thread_list[current_task].lastrun = thread_gettime();
-    corecontext->thread_list[current_task].nextrun = thread_gettime();
 
     size_t next_task = schedule(corecontext->thread_list, current_task, corecontext->threadcount);
     threadinfo_t* next_thread = &corecontext->thread_list[next_task];
@@ -353,10 +354,8 @@ void thread_create(thread_entrypoint_t entry, void* args, threadpriority_t prior
             thread_new->sp_cur,
             (unsigned long)corecontext->threadcount);
 
-    kernel_critical_exit();
-
     corecontext->threadcount++;
-
+    kernel_critical_exit();
 
 }
 
@@ -382,6 +381,14 @@ void thread_begin() {
             return;
         }
     }
+
+}
+
+void thread_exit_cb() {
+
+    LOGE("????", "What is happening why is this code running!!!!");
+
+    while(1) {}
 
 }
 
