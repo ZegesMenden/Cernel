@@ -105,10 +105,18 @@ thread_context_load:
     # Load stack pointer from the first argument passed
     mv      sp, a0              
 
-    #  CSRs 
+    #  CSRs
     lw      t0,    0(sp)
     csrw    mepc, t0
+
+    # Restore mstatus with two corrections:
+    #   1. Force MPP = M-mode (0x1800) so mret never drops to U-mode
+    #   2. Clear MIE (bit 3) so an interrupt can't fire mid-restore;
+    #      mret will re-enable interrupts via MPIE.
     lw      t0,    4(sp)
+    li      t1,    0x1800
+    or      t0,    t0, t1   # set MPP = 11 (machine)
+    andi    t0,    t0, -9   # clear MIE (bit 3)
     csrw    mstatus, t0
 
     #  integer registers 
@@ -155,12 +163,16 @@ thread_context_init:
     la  t0, thread_bootstrap
     sw  t0, 0(a0)
 
+    # Store exit callback in thread's return address
+    la  t0, thread_exit_cb
+    sw  t0, 8(a0)
+
     # mstatus: MPP=3 (Machine mode), MPIE=1 (interrupts enabled after mret)
     li  t0, 0x1880
     sw  t0,   4(a0)
 
     # zero all GPR slots
-    sw  zero,   8(a0)   # ra
+    # sw  zero,   8(a0)   # ra
     sw  zero,  12(a0)   # t0
     sw  zero,  16(a0)   # t1
     sw  zero,  20(a0)   # t2
