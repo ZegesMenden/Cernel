@@ -37,6 +37,17 @@ static const char* TAG = "kmalloc";
 
 static kalloc_arena_t g_arenas[KALLOC_MAX_ARENAS];
 
+static inline void log_arena_brief(const char* msg, size_t ai, kalloc_arena_t* arena) {
+    LOGI(TAG, "%s: arena=%u base=%p bytes=%zu blocks=%u sectors=%u in_use=%u",
+         msg,
+         (unsigned)ai,
+         arena->base,
+         arena->bytes,
+         (unsigned)arena->blocks,
+         (unsigned)arena->sector_count,
+         arena->in_use ? 1u : 0u);
+}
+
 // --- Sector helpers ---
 
 static inline bool sector_is_allocated(kalloc_sector_t s) {
@@ -177,9 +188,11 @@ static bool arena_reserve_slot(size_t* out_slot) {
             g_arenas[i] = (kalloc_arena_t){0};
             g_arenas[i].in_use = true; // reserved
             *out_slot = i;
+            LOGI(TAG, "reserve slot=%u", (unsigned)i);
             return true;
         }
     }
+    LOGW(TAG, "reserve failed: no free arena slots");
     return false;
 }
 
@@ -188,6 +201,7 @@ static void arena_unreserve_slot(size_t slot) {
         return;
     }
     g_arenas[slot] = (kalloc_arena_t){0};
+    LOGI(TAG, "unreserve slot=%u", (unsigned)slot);
 }
 
 static bool arena_try_alloc_existing_best_fit(kalloc_arena_t* arena, uint32_t req_units, uint32_t* out_idx) {
@@ -241,6 +255,7 @@ static void* arena_append_sector(kalloc_arena_t* arena, uint32_t req_units) {
     size_t a = kalloc_align();
     size_t req_bytes = (size_t)req_units * a;
     if (!arena_can_append(arena, req_bytes)) {
+        LOGI(TAG, "append denied: req_units=%u req_bytes=%zu", (unsigned)req_units, req_bytes);
         return NULL;
     }
 
@@ -249,6 +264,7 @@ static void* arena_append_sector(kalloc_arena_t* arena, uint32_t req_units) {
         kalloc_sector_t s0 = *arena_sector_at(arena, 0);
         if (!sector_is_allocated(s0) && sector_size_units(s0) == 0) {
             sector_set(arena_sector_at(arena, 0), true, req_units);
+            LOGI(TAG, "append reuse sentinel: req_units=%u", (unsigned)req_units);
             return (void*)arena->base;
         }
     }
@@ -257,6 +273,10 @@ static void* arena_append_sector(kalloc_arena_t* arena, uint32_t req_units) {
     kalloc_sector_t* new_sector = arena_sector_at(arena, arena->sector_count);
     sector_set(new_sector, true, req_units);
     arena_rewrite_sector_count(arena, arena->sector_count + 1);
+
+        LOGI(TAG, "append new sector: req_units=%u sectors=%u",
+            (unsigned)req_units,
+            (unsigned)arena->sector_count);
 
     return (void*)(arena->base + arena_total_data_bytes(arena) - req_bytes);
 }
@@ -277,19 +297,32 @@ static bool arena_init_reserved(size_t slot, void* base, uint16_t blocks) {
 
     // Initialize sentinel sector header at the top.
     sector_set(arena_sector_at(arena, 0), false, 0);
+    LOGI(TAG, "arena init: slot=%u base=%p blocks=%u bytes=%zu",
+         (unsigned)slot,
+         base,
+         (unsigned)blocks,
+         arena->bytes);
     return true;
 }
 
 // --- Public allocator API ---
 
 void* kmalloc(size_t size) {
+    LOGI(TAG, "kmalloc request: size=%zu", size);
     if (size == 0) {
+        LOGW(TAG, "kmalloc size=0");
         return NULL;
     }
 
     size_t a = kalloc_align();
     size_t aligned = align_up(size, a);
     uint32_t req_units = (uint32_t)(aligned / a);
+
+        LOGI(TAG, "kmalloc aligned: size=%zu aligned=%zu units=%u align=%zu",
+            size,
+            aligned,
+            (unsigned)req_units,
+            a);
 
     kalloc_lock();
 
@@ -321,8 +354,15 @@ void* kmalloc(size_t size) {
     }
 
     if (best_arena != NULL) {
+        size_t ai = (size_t)(best_arena - g_arenas);
+        log_arena_brief("reuse arena", ai, best_arena);
+        LOGI(TAG, "kmalloc reuse: arena=%u idx=%u units=%u",
+             (unsigned)ai,
+             (unsigned)best_idx,
+             (unsigned)sector_size_units(*arena_sector_at(best_arena, best_idx)));
         sector_set(arena_sector_at(best_arena, best_idx), true, sector_size_units(*arena_sector_at(best_arena, best_idx)));
         void* ptr = (void*)arena_data_ptr_for_sector(best_arena, best_idx);
+        LOGI(TAG, "kmalloc ptr=%p", ptr);
         kalloc_unlock();
         return ptr;
     }
@@ -362,7 +402,14 @@ void* kmalloc(size_t size) {
     }
 
     if (append_arena != NULL) {
+        size_t ai = (size_t)(append_arena - g_arenas);
+        log_arena_brief("append arena", ai, append_arena);
+        LOGI(TAG, "kmalloc append: arena=%u units=%u slack=%zu",
+             (unsigned)ai,
+             (unsigned)req_units,
+             append_slack);
         void* ptr = arena_append_sector(append_arena, req_units);
+        LOGI(TAG, "kmalloc ptr=%p", ptr);
         kalloc_unlock();
         return ptr;
     }
@@ -371,6 +418,7 @@ void* kmalloc(size_t size) {
     size_t slot = (size_t)-1;
     if (!arena_reserve_slot(&slot)) {
         kalloc_unlock();
+        LOGE(TAG, "kmalloc failed: no arena slots");
         return NULL;
     }
     kalloc_unlock();
@@ -386,6 +434,7 @@ void* kmalloc(size_t size) {
         kalloc_lock();
         arena_unreserve_slot(slot);
         kalloc_unlock();
+        LOGE(TAG, "kmalloc failed: block consume blocks=%u", (unsigned)blocks);
         return NULL;
     }
 
@@ -394,8 +443,10 @@ void* kmalloc(size_t size) {
         arena_unreserve_slot(slot);
         kalloc_unlock();
         (void)mem_block_return(base);
+        LOGE(TAG, "kmalloc failed: arena init slot=%u", (unsigned)slot);
         return NULL;
     }
+    log_arena_brief("new arena", slot, &g_arenas[slot]);
 
     void* ptr = arena_append_sector(&g_arenas[slot], req_units);
     if (!ptr) {
@@ -403,14 +454,18 @@ void* kmalloc(size_t size) {
         arena_unreserve_slot(slot);
         kalloc_unlock();
         (void)mem_block_return(base);
+        LOGE(TAG, "kmalloc failed: append in new arena slot=%u", (unsigned)slot);
         return NULL;
     }
+    LOGI(TAG, "kmalloc ptr=%p", ptr);
     kalloc_unlock();
     return ptr;
 }
 
 void kfree(void* ptr) {
+    LOGI(TAG, "kfree request: ptr=%p", ptr);
     if (ptr == NULL) {
+        LOGW(TAG, "kfree ptr=NULL");
         return;
     }
 
@@ -426,13 +481,21 @@ void kfree(void* ptr) {
 
         uint32_t idx = 0;
         if (!arena_find_sector_for_ptr(arena, ptr, &idx)) {
+            LOGW(TAG, "kfree not found: ptr=%p arena=%u", ptr, (unsigned)ai);
             break;
         }
 
         kalloc_sector_t s = *arena_sector_at(arena, idx);
         if (!sector_is_allocated(s)) {
+            LOGW(TAG, "kfree double free? ptr=%p arena=%u idx=%u", ptr, (unsigned)ai, (unsigned)idx);
             break;
         }
+
+        LOGI(TAG, "kfree: ptr=%p arena=%u idx=%u units=%u",
+             ptr,
+             (unsigned)ai,
+             (unsigned)idx,
+             (unsigned)sector_size_units(s));
 
         // Mark free.
         sector_set(arena_sector_at(arena, idx), false, sector_size_units(s));
@@ -445,6 +508,10 @@ void kfree(void* ptr) {
                 sector_set(arena_sector_at(arena, idx - 1), false, merged);
                 arena_remove_sector_at(arena, idx);
                 idx -= 1;
+                LOGI(TAG, "kfree coalesce prev: arena=%u idx=%u units=%u",
+                     (unsigned)ai,
+                     (unsigned)idx,
+                     (unsigned)merged);
             }
         }
 
@@ -455,6 +522,10 @@ void kfree(void* ptr) {
                 uint32_t merged = sector_size_units(*arena_sector_at(arena, idx)) + sector_size_units(next);
                 sector_set(arena_sector_at(arena, idx), false, merged);
                 arena_remove_sector_at(arena, idx + 1);
+                LOGI(TAG, "kfree coalesce next: arena=%u idx=%u units=%u",
+                     (unsigned)ai,
+                     (unsigned)idx,
+                     (unsigned)merged);
             }
         }
 
@@ -463,6 +534,7 @@ void kfree(void* ptr) {
         if (arena_is_empty(arena)) {
             arena_base_to_return = arena->base;
             *arena = (kalloc_arena_t){0};
+            LOGI(TAG, "kfree arena empty: arena=%u base=%p", (unsigned)ai, arena_base_to_return);
         }
         break;
     }
@@ -476,16 +548,21 @@ void kfree(void* ptr) {
 }
 
 void* krealloc(void* ptr, size_t size) {
+    LOGI(TAG, "krealloc request: ptr=%p size=%zu", ptr, size);
     if (ptr == NULL) {
+        LOGI(TAG, "krealloc ptr=NULL -> kmalloc");
         return kmalloc(size);
     }
     if (size == 0) {
+        LOGI(TAG, "krealloc size=0 -> kfree");
         kfree(ptr);
         return NULL;
     }
 
     size_t a = kalloc_align();
     size_t aligned = align_up(size, a);
+
+    LOGI(TAG, "krealloc aligned: size=%zu aligned=%zu", size, aligned);
 
     kalloc_lock();
 
@@ -502,11 +579,13 @@ void* krealloc(void* ptr, size_t size) {
 
         kalloc_sector_t s = *arena_sector_at(arena, idx);
         if (!sector_is_allocated(s)) {
+            LOGW(TAG, "krealloc invalid ptr: ptr=%p arena=%u idx=%u", ptr, (unsigned)ai, (unsigned)idx);
             break;
         }
 
         size_t cur_bytes = (size_t)sector_size_units(s) * a;
         if (cur_bytes >= aligned) {
+            LOGI(TAG, "krealloc in-place: ptr=%p cur_bytes=%zu", ptr, cur_bytes);
             kalloc_unlock();
             return ptr;
         }
@@ -515,32 +594,40 @@ void* krealloc(void* ptr, size_t size) {
         kalloc_unlock();
         void* new_ptr = kmalloc(size);
         if (!new_ptr) {
+            LOGE(TAG, "krealloc failed: ptr=%p size=%zu", ptr, size);
             return NULL;
         }
         memcpy(new_ptr, ptr, cur_bytes);
         kfree(ptr);
+        LOGI(TAG, "krealloc moved: old=%p new=%p bytes=%zu", ptr, new_ptr, cur_bytes);
         return new_ptr;
     }
 
     kalloc_unlock();
+    LOGW(TAG, "krealloc failed: ptr not in arenas ptr=%p", ptr);
     return NULL;
 }
 
 void* kcalloc(size_t count, size_t size) {
+    LOGI(TAG, "kcalloc request: count=%zu size=%zu", count, size);
     if (count == 0 || size == 0) {
+        LOGW(TAG, "kcalloc zero input");
         return kmalloc(0);
     }
 
     // overflow check
     if (SIZE_MAX / count < size) {
+        LOGE(TAG, "kcalloc overflow: count=%zu size=%zu", count, size);
         return NULL;
     }
 
     size_t total = count * size;
     void* ptr = kmalloc(total);
     if (!ptr) {
+        LOGE(TAG, "kcalloc failed: total=%zu", total);
         return NULL;
     }
     memset(ptr, 0, total);
+    LOGI(TAG, "kcalloc ptr=%p total=%zu", ptr, total);
     return ptr;
 }
